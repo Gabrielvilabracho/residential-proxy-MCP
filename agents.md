@@ -58,7 +58,10 @@ session) actively causes the 403 errors it exists to prevent.
 
 ## 5. Verification
 
-- Use `check_exit_ip` to confirm the proxy is alive and to see which country
-  the current rotating exit resolves to.
-- When verifying that geotargeting worked, compare the `countryCode` from the
-  check against the `country` you passed to `fetch_page`.
+- Use `check_exit_ip` to confirm the proxy is alive and to see which IP the
+  current targeting produces. It accepts the same optional `country` and
+  `sessionId` parameters as `fetch_page` — pass them to verify that a specific
+  geo or sticky session is actually in effect, and compare the result against
+  what you requested.
+- `fetch_page` returns readable plain text by default. Use `raw: true` only
+  when the task genuinely needs the raw HTML markup.

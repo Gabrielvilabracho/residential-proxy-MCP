@@ -6,7 +6,7 @@
  * what the parameters mean, and how to recover from blocks.
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { fetchPageShape } from "./schemas/inputs.js";
+import { checkExitIpShape, fetchPageShape } from "./schemas/inputs.js";
 import { handleFetchPage } from "./tools/fetchPage.js";
 import { handleCheckExitIp } from "./tools/checkExitIp.js";
 
@@ -33,6 +33,7 @@ export function createServer(): McpServer {
         "Pass the same `sessionId` across requests to the same site to keep the same exit IP " +
         "(~30 min lifetime). " +
         "`city` is a paid targeting add-on and REQUIRES `country`. " +
+        "`raw` returns the raw HTML instead of the converted plain text. " +
         "On a 403 response the result includes explicit guidance — never retry a blocked request " +
         "with identical settings; change the country or rotate the session.",
       inputSchema: fetchPageShape,
@@ -43,12 +44,13 @@ export function createServer(): McpServer {
   server.registerTool(
     "check_exit_ip",
     {
-      title: "Check the current proxy exit IP and location",
+      title: "Check the current proxy exit IP",
       description:
-        "Returns the current exit IP plus its country, city and ISP as seen through the " +
-        "residential proxy. Use it to verify the proxy is working and to confirm which " +
-        "location a request will exit from. No arguments.",
-      inputSchema: {},
+        "Returns the public IP assigned by the current DataImpulse proxy targeting. " +
+        "Use it to verify the proxy is working and to confirm a specific country/session " +
+        "targeting is in effect (pass the same `country`/`sessionId` used on the request). " +
+        "Without arguments it reports the rotating exit IP.",
+      inputSchema: checkExitIpShape,
     },
     handleCheckExitIp
   );

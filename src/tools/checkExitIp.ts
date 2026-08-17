@@ -1,86 +1,59 @@
 /**
- * `check_exit_ip` tool — verifies the current proxy exit: IP, location and ISP.
+ * `check_exit_ip` tool — verifies the current proxy exit: which IP the given
+ * targeting produces, through the Data Impulse gateway.
  *
- * Queries ip-api.com through the proxy (no targeting → rotating exit IP).
- * Falls back to api.ipify.org if the primary endpoint is unreachable.
- * Both responses are sub-1 KB, so the bandwidth cost is negligible.
+ * Optional `country`/`sessionId` targeting lets the agent confirm a specific
+ * geo or sticky session is working; without them it reports the rotating exit.
  */
-import { fetchWithProxy } from "../proxy/client.js";
+import { proxyFetch } from "../proxy/client.js";
+import { failure, success, validationFailure } from "../proxy/errors.js";
+import { RequestValidationError } from "../proxy/ssrf.js";
+import { ResponseBodyTooLargeError } from "../proxy/response.js";
+import { checkExitIpSchema, exitIpResponseSchema } from "../schemas/inputs.js";
+import type { ToolResult } from "../proxy/errors.js";
 
-/** Primary endpoint: IP + geo in one tiny JSON payload. */
-const IP_API_URL = "http://ip-api.com/json/?fields=status,message,query,country,countryCode,city,regionName,isp,org";
+/** Tiny JSON endpoint returning only the egress IP. */
+const EXIT_IP_ENDPOINT = "https://api.ipify.org?format=json";
 
-/** Fallback endpoint: IP only. */
-const IPIFY_URL = "https://api.ipify.org?format=json";
-
-/** MCP tool handler — parameterless by design (spec). */
-export async function handleCheckExitIp() {
-  let result = await fetchWithProxy(IP_API_URL, { timeoutMs: 20_000 });
-
-  let summary: Record<string, unknown>;
-
-  if (result.status === 200 && result.body) {
-    try {
-      const geo = JSON.parse(result.body) as {
-        status?: string;
-        query?: string;
-        country?: string;
-        countryCode?: string;
-        city?: string;
-        regionName?: string;
-        isp?: string;
-        org?: string;
-      };
-      summary = {
-        source: "ip-api.com",
-        ip: geo.query,
-        country: geo.country,
-        countryCode: geo.countryCode,
-        city: geo.city,
-        region: geo.regionName,
-        isp: geo.isp ?? geo.org,
-        proxyStatus: "reachable",
-      };
-    } catch {
-      // Non-JSON body from ip-api: fall through to the ipify fallback.
-      result = await fetchWithProxy(IPIFY_URL, { timeoutMs: 20_000 });
-      summary = fallbackSummary(result);
-    }
-  } else {
-    // Primary endpoint failed (rate limit, geo-block, etc.) → try ipify.
-    const fallback = await fetchWithProxy(IPIFY_URL, { timeoutMs: 20_000 });
-    summary = fallbackSummary(fallback, result);
+/** MCP tool handler. */
+export async function handleCheckExitIp(args: unknown): Promise<ToolResult> {
+  const parsed = checkExitIpSchema.safeParse(args);
+  if (!parsed.success) {
+    return validationFailure(parsed.error);
   }
 
-  const content: { type: "text"; text: string }[] = [
-    { type: "text", text: JSON.stringify(summary, null, 2) },
-  ];
+  const { country, sessionId } = parsed.data;
 
-  return { content };
-}
+  try {
+    const { response, body } = await proxyFetch(EXIT_IP_ENDPOINT, {
+      targeting: { country, sessionId },
+      headers: { accept: "application/json, text/plain, */*" },
+    });
 
-function fallbackSummary(
-  fallback: Awaited<ReturnType<typeof fetchWithProxy>>,
-  primary?: Awaited<ReturnType<typeof fetchWithProxy>>
-): Record<string, unknown> {
-  if (fallback.status === 200 && fallback.body) {
-    try {
-      const ip = (JSON.parse(fallback.body) as { ip?: string }).ip;
-      return {
-        source: "api.ipify.org",
-        ip,
-        proxyStatus: "reachable",
-        ...(primary?.error ? { primaryError: primary.error } : {}),
-      };
-    } catch {
-      // ignore — fall through to the generic error report
+    if (!response.ok) {
+      return failure(`The exit-IP service responded with HTTP ${response.status}.`);
     }
-  }
 
-  return {
-    ip: null,
-    proxyStatus: "unreachable",
-    error: fallback.error ?? `Unexpected status ${fallback.status}`,
-    guidance: fallback.guidance ?? "Verify PROXY_USER/PROXY_PASS and that the proxy gateway is reachable.",
-  };
+    let parsedBody: unknown;
+    try {
+      parsedBody = JSON.parse(body);
+    } catch {
+      return failure("The exit-IP service returned invalid JSON.");
+    }
+
+    const payload = exitIpResponseSchema.safeParse(parsedBody);
+    if (!payload.success) {
+      return failure("The exit-IP service returned an invalid response.");
+    }
+
+    return success(`Exit IP: ${payload.data.ip}`);
+  } catch (error) {
+    if (error instanceof RequestValidationError) {
+      return failure(error.message);
+    }
+    if (error instanceof ResponseBodyTooLargeError) {
+      return failure(`${error.message} Request a smaller resource and retry.`);
+    }
+    return failure("Network request failed. Check the destination and proxy availability, then retry.");
+  }
 }
